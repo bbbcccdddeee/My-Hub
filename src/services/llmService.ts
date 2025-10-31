@@ -80,8 +80,15 @@ export async function sendMessage(
       }
   }
 
-  if (!settings.selectedProvider || !settings.apiKey) {
-    const error = new Error('未配置服务商或 API Key');
+  // ❗ 修改：允许 Ollama 不需要 API Key
+  if (!settings.selectedProvider) {
+    const error = new Error('未选择服务商');
+    console.error('LLM Service Error:', error);
+    return callbacks.onError(error);
+  }
+
+  if (settings.selectedProvider !== 'ollama' && !settings.apiKey) {
+    const error = new Error('该服务商需要配置 API Key');
     console.error('LLM Service Error:', error);
     return callbacks.onError(error);
   }
@@ -98,7 +105,12 @@ export async function sendMessage(
     if (!provider) {
       return callbacks.onError(new Error(`未找到服务商: ${settings.selectedProvider}`));
     }
-    baseUrl = provider.baseUrl;
+    // ❗ 修改：为 Ollama 提供默认 URL
+    if (settings.selectedProvider === 'ollama') {
+      baseUrl = settings.customApiUrl || provider.baseUrl;
+    } else {
+      baseUrl = provider.baseUrl;
+    }
     model = settings.selectedModel === 'custom' ? (settings.customModel || '') : settings.selectedModel;
   }
 
@@ -110,24 +122,40 @@ export async function sendMessage(
     return callbacks.onError(new Error('未选择模型'));
   }
 
-  const requestBody = {
-    model: model,
-    messages: messages,
-    stream: options.stream,
-  };
+  // ❗ 修改：为 Ollama 构建不同的请求体
+  let requestBody: any;
+
+  if (settings.selectedProvider === 'ollama') {
+    requestBody = {
+      model,
+      messages,
+      stream: options.stream,
+    };
+  } else {
+    requestBody = {
+      model: model,
+      messages: messages,
+      stream: options.stream,
+    };
+  }
 
   console.log('[LLM Service][Cloud] Using provider:', settings.selectedProvider, 'baseUrl:', baseUrl, 'model:', model);
   console.log('[LLM Service][Cloud] Input messages:', JSON.stringify(messages, null, 2));
   console.log('[LLM Service][Cloud] Request body:', JSON.stringify(requestBody, null, 2));
 
-
   try {
+    // ❗ 修改：构建请求头时排除 Ollama 的认证头
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    if (settings.selectedProvider !== 'ollama' && settings.apiKey) {
+      headers['Authorization'] = `Bearer ${settings.apiKey}`;
+    }
+
     const response = await fetch(baseUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${settings.apiKey}`,
-      },
+      headers,
       body: JSON.stringify(requestBody),
       signal: abortSignal,
     });
@@ -174,7 +202,15 @@ export async function sendMessage(
                     try {
                         const data = JSON.parse(dataStr);
                         //console.log('LLM Service: Parsed data:', data);
-                        const content = data.choices[0]?.delta?.content;
+                        
+                        // ❗ 修改：根据服务商提取内容
+                        let content = '';
+                        if (settings.selectedProvider === 'ollama') {
+                          content = data.message?.content || '';
+                        } else {
+                          content = data.choices?.[0]?.delta?.content || '';
+                        }
+                        
                         if (content) {
                             console.log('[LLM Service][Cloud][Stream] content:', content);
                             callbacks.onUpdate(content);
@@ -201,7 +237,15 @@ export async function sendMessage(
         // Handle non-streaming response
         const data = await response.json();
         console.log('LLM Service: Received non-streamed response:', data);
-        const content = data.choices?.[0]?.message?.content || '';
+        
+        // ❗ 修改：根据服务商提取内容
+        let content = '';
+        if (settings.selectedProvider === 'ollama') {
+          content = data.message?.content || '';
+        } else {
+          content = data.choices?.[0]?.message?.content || '';
+        }
+        
         console.log('[LLM Service][Cloud][NonStream] content:', content);
         callbacks.onFinish(content);
     }
